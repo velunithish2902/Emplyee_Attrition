@@ -1,126 +1,168 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import LabelEncoder
+import matplotlib.pyplot as plt
+import pickle
 
-# Page configuration
-st.set_page_config(page_title="Employee Attrition Prediction", layout="wide")
+# --------------------------
+# Page Setup
+# --------------------------
+st.set_page_config(page_title="Employee Attrition Dashboard", layout="wide")
+st.title("📊 Employee Attrition Analysis and Prediction Dashboard")
 
-# Load data
+# --------------------------
+# Load Data and Model
+# --------------------------
 @st.cache_data
 def load_data():
-    return pd.read_csv("Employee-Attrition - Employee-Attrition.csv")
+    df = pd.read_csv(r"C:\Users\user\nith\employee_attrition_cleaned.csv")
+    df.columns = df.columns.str.strip().str.lower()  # normalize column names
 
-df = load_data()
-st.title("\U0001F468‍\U0001F4BC Employee Attrition Analysis and Prediction")
+    # Convert 'True'/'False' strings to 1/0 (fix for ValueError)
+    df = df.replace({'True': 1, 'False': 0, 'true': 1, 'false': 0})
 
-# Sidebar
-st.sidebar.header("Navigation")
-page = st.sidebar.radio("Go to", ["DASHBOARD", "ATTRITION PREDICTION"])
-
-# Label Encoding
-def preprocess_data(df):
-    df = df.copy()
-    le = LabelEncoder()
-    for col in df.select_dtypes(include=['object']).columns:
-        df[col] = le.fit_transform(df[col])
     return df
 
-# Page 1: EDA
-if page == "DASHBOARD":
-    st.header("\U0001F4CA Exploratory Data Analysis")
-    st.subheader("Dataset Overview")
-    st.dataframe(df.head(10))
+df = load_data()
 
-    if st.checkbox("Show Shape and Nulls"):
-        st.write("Shape:", df.shape)
-        st.write("Missing Values:\n", df.isnull().sum())
+# Load trained model, feature columns, and label encoders
+with open(r"C:\Users\user\nith\attrition_model.pkl", "rb") as f:
+    rf_model, feature_cols, label_encoders = pickle.load(f)
 
-    st.subheader("Attrition Distribution")
-    fig1, ax1 = plt.subplots()
-    sns.countplot(x="Attrition", data=df, ax=ax1)
-    st.pyplot(fig1)
+if isinstance(feature_cols, pd.Index):
+    feature_cols = feature_cols.tolist()
 
-    st.subheader("Attrition by Department")
-    fig2, ax2 = plt.subplots()
-    sns.countplot(x="Department", hue="Attrition", data=df, ax=ax2)
-    plt.xticks(rotation=45)
-    st.pyplot(fig2)
+# --------------------------
+# Tabs
+# --------------------------
+tabs = st.tabs(["EDA & Insights", "Feature Importance", "Prediction"])
+
+# --------------------------
+# TAB 1: EDA & Insights
+# --------------------------
+with tabs[0]:
+    st.header("Exploratory Data Analysis (EDA)")
+
+    # Convert categorical columns for plotting
+    for col in ['attrition', 'overtime'] + [c for c in df.columns if c.startswith('department_')]:
+        if col in df.columns:
+            df[col] = df[col].astype(str)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Attrition Count")
+        fig, ax = plt.subplots(figsize=(5, 3))
+        sns.countplot(x='attrition', data=df, ax=ax)
+        ax.set_title("Attrition (0 = Stay, 1 = Leave)")
+        st.pyplot(fig)
+
+        st.subheader("Monthly Income vs Attrition")
+        fig, ax = plt.subplots(figsize=(5, 3))
+        sns.boxplot(x='attrition', y='monthlyincome', data=df, ax=ax)
+        st.pyplot(fig)
+
+    with col2:
+        st.subheader("Attrition by Department")
+        dept_cols = [c for c in df.columns if c.startswith('department_')]
+        if dept_cols:
+            dept_attrition = pd.DataFrame({
+                'department': [c.replace('department_', '').replace('_', ' ') for c in dept_cols],
+                'attrition_rate': [
+                    pd.to_numeric(df[c].replace({'True': 1, 'False': 0}), errors='coerce').mean()
+                    for c in dept_cols
+                ]
+            })
+            fig, ax = plt.subplots(figsize=(5, 3))
+            sns.barplot(x='department', y='attrition_rate', data=dept_attrition, ax=ax)
+            ax.set_ylabel("Attrition Rate")
+            st.pyplot(fig)
+
+        st.subheader("Attrition vs Overtime")
+        fig, ax = plt.subplots(figsize=(5, 3))
+        sns.countplot(x='overtime', hue='attrition', data=df, ax=ax)
+        st.pyplot(fig)
 
     st.subheader("Correlation Heatmap")
-    df_encoded = preprocess_data(df)
-    fig3, ax3 = plt.subplots(figsize=(12, 8))
-    sns.heatmap(df_encoded.corr(), cmap="coolwarm", ax=ax3)
-    st.pyplot(fig3)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    numeric_cols = df.select_dtypes(include='number').columns
+    sns.heatmap(df[numeric_cols].corr(), annot=True, fmt=".2f", cmap="coolwarm", ax=ax)
+    st.pyplot(fig)
 
-# Page 2: Prediction
-elif page =="ATTRITION PREDICTION":
-    st.header("\U0001F52E Predict Employee Attrition")
+# --------------------------
+# TAB 2: Feature Importance
+# --------------------------
+with tabs[1]:
+    st.header("Top Features Influencing Attrition")
+    importances = rf_model.feature_importances_
+    features = pd.Series(importances, index=feature_cols).sort_values(ascending=False)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.barplot(x=features[:15], y=features.index[:15], ax=ax, palette="viridis")
+    ax.set_title("Top 15 Important Features")
+    st.pyplot(fig)
 
-    # Preprocessing
-    df_model = preprocess_data(df)
-    X = df_model.drop(columns=["Attrition", "EmployeeNumber", "EmployeeCount", "Over18", "StandardHours"])
-    y = df_model["Attrition"]
+# --------------------------
+# TAB 3: Prediction
+# --------------------------
+with tabs[2]:
+    st.header("Predict Employee Attrition")
 
-    # Train/Test Split
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    # Input Form
+    col1, col2 = st.columns(2)
+    with col1:
+        age = st.number_input("Age", min_value=18, max_value=65, value=30)
+        monthly_income = st.slider("Monthly Income", min_value=1000, max_value=20000, value=5000, step=500)
+        distance = st.slider("Distance From Home (km)", min_value=0, max_value=100, value=10, step=1)
+        jobsatisfaction = st.selectbox("Job Satisfaction", [1, 2, 3, 4], index=2)
+    with col2:
+        overtime = st.selectbox("Overtime", ["Yes", "No"])
+        job_level = st.number_input("Job Level", min_value=1, max_value=5, value=2)
+        years_at_company = st.number_input("Years at Company", min_value=0, max_value=40, value=5)
 
-    # Train Model
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-    model.fit(X_train, y_train)
+        # Dynamically get department options
+        department_cols = [c for c in feature_cols if c.startswith('department_')]
+        departments = [c.replace('department_', '').replace('_', ' ') for c in department_cols]
+        department = st.selectbox("Department", departments)
 
-    # User Input
-    st.subheader("Make a Prediction")
-    input_data = {}
+        # Dynamically get job role options
+        jobrole_cols = [c for c in feature_cols if c.startswith('jobrole_')]
+        jobroles = [c.replace('jobrole_', '').replace('_', ' ') for c in jobrole_cols]
+        jobrole = st.selectbox("Job Role", jobroles)
 
-    for col in X.columns:
-        if col == "MaritalStatus":
-            input_data[col] = st.selectbox("Marital Status", options=["Single", "Married", "Divorced"])
-        elif col == "BusinessTravel":
-            input_data[col] = st.selectbox("Business Travel", options=["Travel_Rarely", "Travel_Frequently", "Non-Travel"])
-        elif col == "Age":
-            input_data[col] = st.selectbox("🎯 Select Age", sorted(df['Age'].unique()))
-        elif col == 'DailyRate':
-            input_data[col] = st.selectbox("✅ Select DailyRate (greater than 100)", list(range(101, 1001)))
-        elif col == 'Department':
-            input_data[col] = st.selectbox("Department", options=['Sales', 'Research & Development', 'Human Resources'])
-        elif col == 'MonthlyIncome':
-            input_data[col] = st.selectbox("MonthlyIncome", sorted(df['MonthlyIncome'].unique()))
-        elif col == 'OverTime':
-            input_data[col] = 'Yes' if st.checkbox("OverTime (Check if Yes)") else 'No'
-        else:
-            input_data[col] = st.number_input(f"{col}", value=float(X[col].mean()))
+    overtime_val = 1 if overtime == "Yes" else 0
 
-    input_df = pd.DataFrame([input_data])
+    if st.button("Predict Attrition"):
+        # Create empty DataFrame
+        user_data = pd.DataFrame([[0]*len(feature_cols)], columns=feature_cols)
 
-    # Encode input data
-    input_df_encoded = input_df.copy()
-    for col in input_df_encoded.select_dtypes(include='object').columns:
-        le = LabelEncoder()
-        le.fit(df[col])
-        input_df_encoded[col] = le.transform(input_df_encoded[col])
+        # Fill numeric fields
+        numeric_mapping = {
+            'age': age,
+            'monthlyincome': monthly_income,
+            'distancefromhome': distance,
+            'jobsatisfaction': jobsatisfaction,
+            'overtime': overtime_val,
+            'joblevel': job_level,
+            'yearsatcompany': years_at_company
+        }
+        for col, val in numeric_mapping.items():
+            if col in user_data.columns:
+                user_data[col] = val
 
-    # 🔧 Align with training columns
-    input_df_encoded = input_df_encoded.reindex(columns=X_train.columns, fill_value=0)
+        # Fill one-hot encoded fields
+        dept_col_name = f"department_{department.lower().replace(' ', '_')}"
+        if dept_col_name in user_data.columns:
+            user_data[dept_col_name] = 1
 
-    # Accuracy
-    st.subheader("Model Accuracy on Test Data")
-    acc = model.score(X_test, y_test)
-    st.write(f"\U0001F539 Accuracy: {acc:.2f}")
+        jobrole_col_name = f"jobrole_{jobrole.lower().replace(' ', '_')}"
+        if jobrole_col_name in user_data.columns:
+            user_data[jobrole_col_name] = 1
 
-    # Predict
-    if st.button("\U0001F50D Predict"):
-        prediction = model.predict(input_df_encoded)[0]
-        prediction_proba = model.predict_proba(input_df_encoded)[0][1]
+        # Predict
+        prediction = rf_model.predict(user_data)[0]
+        proba = rf_model.predict_proba(user_data)[0][prediction]
 
         if prediction == 1:
-            st.markdown(
-                f"<h3 style='color:red;'>⚠️ The employee is likely to leave. (Risk: {prediction_proba * 100:.2f}%)</h3>",
-                unsafe_allow_html=True)
+            st.error(f"Prediction: **Leave** (Probability: {proba:.2f})")
         else:
-            st.markdown(
-                f"<h3 style='color:green;'>✅ The employee is likely to stay. (Confidence: {(1 - prediction_proba) * 100:.2f}%)</h3>",
-                unsafe_allow_html=True)
+            st.success(f"Prediction: **Stay** (Probability: {proba:.2f})")
